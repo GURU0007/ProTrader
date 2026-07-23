@@ -23,8 +23,16 @@ let currentInterval = '5m';   // '5m', '15m', '1h', '1d', '1wk', '1mo'
 let currentChartType = 'line'; // 'line' or 'candle'
 let currentTableView = 'catalysts'; // 'catalysts' or 'compare'
 
-// CORS proxy to access Yahoo Finance directly from the browser (no backend needed)
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+// Multi-proxy CORS strategy: try fastest proxy first, fall back on error
+// Proxies ordered by speed (fastest first)
+const CORS_PROXIES = [
+    (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
+
+// In-memory response cache (key: url, value: { data, expires })
+const _apiCache = new Map();
+const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
 // Company name / sector lookup map for common symbols
 const COMPANY_MAP = {
@@ -93,11 +101,34 @@ function formatDateLabel(date) {
     return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
-// Fetch a URL via allorigins CORS proxy
-async function corsGet(url) {
-    const r = await fetch(CORS_PROXY + encodeURIComponent(url));
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+// Fetch a URL via CORS proxy with caching and automatic proxy fallback
+async function corsGet(url, skipCache = false) {
+    // Check in-memory cache first
+    if (!skipCache) {
+        const cached = _apiCache.get(url);
+        if (cached && Date.now() < cached.expires) {
+            return cached.data;
+        }
+    }
+
+    let lastError;
+    for (const proxyFn of CORS_PROXIES) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout per proxy
+            const r = await fetch(proxyFn(url), { signal: controller.signal });
+            clearTimeout(timeout);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const data = await r.json();
+            // Cache successful response
+            _apiCache.set(url, { data, expires: Date.now() + CACHE_TTL_MS });
+            return data;
+        } catch (err) {
+            lastError = err;
+            // Try next proxy
+        }
+    }
+    throw lastError || new Error('All CORS proxies failed');
 }
 
 // News Catalyst pools for Live AI Forecast HUD
@@ -184,18 +215,8 @@ function saveToLocalStorage() {
 async function fetchStockFromAPI(symbol, range = '1d', interval = '5m') {
     symbol = symbol.toUpperCase();
 
-    // Resolve company name & sector
+    // Resolve company name & sector instantly from local map (no extra API call needed)
     let companyInfo = COMPANY_MAP[symbol] || { name: `${symbol} Inc.`, sector: 'General' };
-    try {
-        const searchData = await corsGet(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=0`);
-        if (searchData.quotes && searchData.quotes.length > 0) {
-            const match = searchData.quotes.find(q => q.symbol.toUpperCase() === symbol) || searchData.quotes[0];
-            companyInfo = {
-                name: match.shortname || match.longname || companyInfo.name,
-                sector: match.industry || match.sector || companyInfo.sector
-            };
-        }
-    } catch(e) { /* use map fallback */ }
 
     // Expand range for YTD/1Y so we have enough data for year-ago comparisons
     let fetchRange = range;
