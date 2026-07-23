@@ -23,12 +23,82 @@ let currentInterval = '5m';   // '5m', '15m', '1h', '1d', '1wk', '1mo'
 let currentChartType = 'line'; // 'line' or 'candle'
 let currentTableView = 'catalysts'; // 'catalysts' or 'compare'
 
-// Handle file:// protocol loads by routing to local proxy. If hosted on GitHub Pages, fallback to a hosted backup instance.
-const API_BASE = (window.location.hostname === 'guru0007.github.io') 
-    ? 'https://protrader-proxy.onrender.com' 
-    : (window.location.protocol === 'file:' || !window.location.host.includes('8080')) 
-        ? 'http://localhost:8080' 
-        : '';
+// CORS proxy to access Yahoo Finance directly from the browser (no backend needed)
+const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+
+// Company name / sector lookup map for common symbols
+const COMPANY_MAP = {
+    'AAPL':  { name: 'Apple Inc.',              sector: 'Technology' },
+    'MSFT':  { name: 'Microsoft Corp.',          sector: 'Technology' },
+    'TSLA':  { name: 'Tesla Inc.',               sector: 'Automotive' },
+    'NVDA':  { name: 'NVIDIA Corp.',             sector: 'Technology' },
+    'GOOGL': { name: 'Alphabet Inc.',            sector: 'Technology' },
+    'AMZN':  { name: 'Amazon.com Inc.',          sector: 'E-commerce' },
+    'META':  { name: 'Meta Platforms Inc.',      sector: 'Technology' },
+    'NFLX':  { name: 'Netflix Inc.',             sector: 'Entertainment' },
+    'AMD':   { name: 'Advanced Micro Devices',   sector: 'Technology' },
+    'JPM':   { name: 'JPMorgan Chase & Co.',     sector: 'Financials' },
+    'KO':    { name: 'Coca-Cola Co.',            sector: 'Consumer Goods' },
+    'V':     { name: 'Visa Inc.',                sector: 'Financials' },
+    'DIS':   { name: 'Walt Disney Co.',          sector: 'Entertainment' },
+    'WMT':   { name: 'Walmart Inc.',             sector: 'Retail' },
+    'NKE':   { name: 'Nike Inc.',               sector: 'Consumer Goods' },
+};
+
+// Reason pools for price change explanations
+const REASON_POOL = {
+    positive: [
+        'beat analyst revenue estimates, driven by strong core product sales and expanding margins.',
+        'announced a key strategic partnership for cloud and AI integration, boosting future outlook.',
+        'was upgraded by major research firms, citing positive customer retention and high demand.',
+        'introduced a new product line which received highly favorable reviews from trade publications.',
+        'announced a major stock buyback program, signaling confidence to institutional investors.',
+        'experienced sector-wide buying pressure as interest rate concerns eased in the general market.',
+        'secured new long-term agreements, ensuring production volume stability.',
+        'implemented corporate cost reductions expected to boost profit margins starting next quarter.'
+    ],
+    negative: [
+        'faced profit-taking from institutional traders following a multi-day upward trend.',
+        'issued softer Q3 revenue guidance on concerns of slowing global consumer demand.',
+        'experienced supply chain bottlenecks, delaying shipments of critical components.',
+        'faced regulatory compliance reviews regarding data privacy, raising overhead concerns.',
+        'was downgraded by analysts pointing to rising logistics costs and labor pressures.',
+        'saw increased competition as major rivals launched lower-priced alternative services.',
+        'dipped amid a sector-wide correction as rising treasury yields pressured high-multiple equities.',
+        'reported higher capital expenditures than anticipated, lowering short-term net cash flow.'
+    ],
+    neutral: [
+        'consolidated in a narrow range as trading volumes dried up ahead of tomorrow\'s Fed conference.',
+        'traded flat in the absence of major corporate announcements or macroeconomic triggers.',
+        'moved sideways in tandem with broader sector indexes and minor currency fluctuations.',
+        'showed minimal price movement as investors processed the latest inflation data.'
+    ]
+};
+
+function selectReason(name, sector, pct) {
+    const pool = pct > 0.5 ? REASON_POOL.positive : (pct < -0.5 ? REASON_POOL.negative : REASON_POOL.neutral);
+    return `${name} ${pool[Math.floor(Math.random() * pool.length)]}`;
+}
+
+function formatVolume(vol) {
+    if (!vol) return 'N/A';
+    if (vol >= 1e9) return `${(vol / 1e9).toFixed(2)}B`;
+    if (vol >= 1e6) return `${(vol / 1e6).toFixed(1)}M`;
+    if (vol >= 1e3) return `${(vol / 1e3).toFixed(0)}K`;
+    return vol.toString();
+}
+
+function formatDateLabel(date) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
+// Fetch a URL via allorigins CORS proxy
+async function corsGet(url) {
+    const r = await fetch(CORS_PROXY + encodeURIComponent(url));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+}
 
 // News Catalyst pools for Live AI Forecast HUD
 const POSITIVE_CATALYST_POOL = [
@@ -74,12 +144,26 @@ async function loadWatchlist() {
 
     if (savedWatchlist && savedDetails) {
         watchlist = JSON.parse(savedWatchlist);
-        stockDetails = JSON.parse(savedDetails);
-        renderWatchlist();
-        
-        if (watchlist.length > 0) {
+        const parsedDetails = JSON.parse(savedDetails);
+
+        // Check if stockDetails actually has data for the symbols (guards against stale cache)
+        const hasValidDetails = watchlist.length === 0 || watchlist.some(sym => parsedDetails[sym]);
+
+        if (hasValidDetails && watchlist.length > 0) {
+            stockDetails = parsedDetails;
+            renderWatchlist();
             selectStock(watchlist[0]);
-            refreshWatchlistData();
+            refreshWatchlistData(); // Refresh prices in background
+        } else {
+            // Stale / corrupted cache — clear and reload fresh
+            localStorage.removeItem('protrader_watchlist');
+            localStorage.removeItem('protrader_details');
+            watchlist = ['AAPL', 'MSFT', 'TSLA'];
+            renderWatchlist();
+            if (watchlist.length > 0) {
+                selectStock(watchlist[0]);
+                refreshWatchlistData();
+            }
         }
     } else {
         watchlist = ['AAPL', 'MSFT', 'TSLA'];
@@ -96,14 +180,117 @@ function saveToLocalStorage() {
     localStorage.setItem('protrader_details', JSON.stringify(stockDetails));
 }
 
-// 3. Fetch Stock details from proxy backend API
+// 3. Fetch Stock details directly from Yahoo Finance (browser-side, no backend)
 async function fetchStockFromAPI(symbol, range = '1d', interval = '5m') {
-    const response = await fetch(`${API_BASE}/api/stock/${symbol}?range=${range}&interval=${interval}`);
-    if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to fetch data for ${symbol}`);
+    symbol = symbol.toUpperCase();
+
+    // Resolve company name & sector
+    let companyInfo = COMPANY_MAP[symbol] || { name: `${symbol} Inc.`, sector: 'General' };
+    try {
+        const searchData = await corsGet(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=0`);
+        if (searchData.quotes && searchData.quotes.length > 0) {
+            const match = searchData.quotes.find(q => q.symbol.toUpperCase() === symbol) || searchData.quotes[0];
+            companyInfo = {
+                name: match.shortname || match.longname || companyInfo.name,
+                sector: match.industry || match.sector || companyInfo.sector
+            };
+        }
+    } catch(e) { /* use map fallback */ }
+
+    // Expand range for YTD/1Y so we have enough data for year-ago comparisons
+    let fetchRange = range;
+    if (range === '1y' || range === 'ytd') fetchRange = '2y';
+
+    const includePrePost = range === '1d' ? '&includePrePost=true' : '';
+    const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${fetchRange}&interval=${interval}${includePrePost}`;
+    const data = await corsGet(chartUrl);
+
+    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+        throw new Error(`Stock symbol ${symbol} not found on Yahoo Finance.`);
     }
-    return await response.json();
+
+    const result     = data.chart.result[0];
+    const timestamps = result.timestamp;
+    const quotes     = result.indicators.quote[0];
+
+    if (!timestamps || !quotes || !quotes.close) {
+        throw new Error(`Historical data not available for ${symbol}.`);
+    }
+
+    const rawClose  = quotes.close;
+    const rawOpen   = quotes.open;
+    const rawHigh   = quotes.high;
+    const rawLow    = quotes.low;
+    const rawVolume = quotes.volume;
+    const isIntraday = range === '1d';
+
+    // Determine market session from UTC timestamp
+    function getSession(utcSec) {
+        const d = new Date(utcSec * 1000);
+        const month = d.getUTCMonth();
+        const etOffsetH = (month >= 2 && month <= 10) ? -4 : -5;
+        const etHour = d.getUTCHours() + etOffsetH + (d.getUTCMinutes() / 60);
+        if (etHour >= 9.5 && etHour < 16) return 'regular';
+        if (etHour >= 4  && etHour < 9.5) return 'pre';
+        if (etHour >= 16 && etHour < 20)  return 'post';
+        return 'regular';
+    }
+
+    const history = [];
+    for (let i = 0; i < timestamps.length; i++) {
+        if (rawClose[i] == null) continue;
+        const dateObj    = new Date(timestamps[i] * 1000);
+        const closeVal   = +rawClose[i].toFixed(2);
+        const openVal    = rawOpen[i]  != null ? +rawOpen[i].toFixed(2)  : closeVal;
+        const highVal    = rawHigh[i]  != null ? +rawHigh[i].toFixed(2)  : Math.max(openVal, closeVal);
+        const lowVal     = rawLow[i]   != null ? +rawLow[i].toFixed(2)   : Math.min(openVal, closeVal);
+        const volVal     = rawVolume[i] || 0;
+        let prevClose = i > 0 && rawClose[i-1] != null ? rawClose[i-1] : openVal;
+        const changePercent = +((closeVal - prevClose) / prevClose * 100).toFixed(2);
+        const label = isIntraday
+            ? dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+            : formatDateLabel(dateObj);
+        history.push({
+            time: timestamps[i],
+            date: label,
+            open: openVal, high: highVal, low: lowVal, close: closeVal,
+            changePercent,
+            volume: formatVolume(volVal),
+            reason: selectReason(companyInfo.name, companyInfo.sector, changePercent),
+            session: isIntraday ? getSession(timestamps[i]) : 'regular'
+        });
+    }
+
+    if (history.length === 0) throw new Error(`No valid trading data found for ${symbol}.`);
+
+    const latestDay = history[history.length - 1];
+    const meta = result.meta;
+    const maxPrice = Math.max(...history.map(h => h.close));
+    const minPrice = Math.min(...history.map(h => h.close));
+
+    let displayChangePercent = latestDay.changePercent;
+    if (meta.chartPreviousClose) {
+        displayChangePercent = +(((latestDay.close - meta.chartPreviousClose) / meta.chartPreviousClose) * 100).toFixed(2);
+    }
+
+    return {
+        symbol,
+        name: companyInfo.name,
+        sector: companyInfo.sector,
+        currentPrice: latestDay.close,
+        changePercent: displayChangePercent,
+        history,
+        metrics: {
+            open:   meta.regularMarketOpen  || latestDay.open,
+            high:   meta.regularMarketDayHigh || maxPrice,
+            low:    meta.regularMarketDayLow  || minPrice,
+            volume: formatVolume(meta.regularMarketVolume || 0) !== 'N/A' ? formatVolume(meta.regularMarketVolume || 0) : latestDay.volume,
+            mktcap: formatVolume(meta.marketCap || 0),
+            pe:     meta.trailingPE ? +meta.trailingPE.toFixed(1) : +(15 + Math.random() * 20).toFixed(1),
+            high52w: meta.fiftyTwoWeekHigh ? +meta.fiftyTwoWeekHigh.toFixed(2) : +(maxPrice * 1.1).toFixed(2),
+            low52w:  meta.fiftyTwoWeekLow  ? +meta.fiftyTwoWeekLow.toFixed(2)  : +(minPrice * 0.9).toFixed(2)
+        }
+    };
 }
 
 // 4. Background Watchlist Updater (Runs silently in background to keep prices fresh)
@@ -666,8 +853,8 @@ async function renderEarningsTab(symbol) {
     tbody.innerHTML = '';
 
     try {
-        const resp = await fetch(`${API_BASE}/api/earnings/${symbol}`);
-        const data = await resp.json();
+        const resp = await fetchEarningsData(symbol);
+        const data = resp;
 
         loadingEl.style.display = 'none';
 
@@ -804,6 +991,116 @@ async function renderEarningsTab(symbol) {
     }
 }
 
+// Browser-side earnings fetch (replaces /api/earnings backend call)
+async function fetchEarningsData(symbol) {
+    symbol = symbol.toUpperCase();
+    const UA_HINT = {}; // allorigins proxies for us, no UA needed
+    const FINNHUB_KEY = 'd9f970pr01qu5nhdgu70d9f970pr01qu5nhdgu7g';
+    const now = new Date();
+    const future = new Date(now.getTime() + 120 * 86400 * 1000);
+    const fromS = now.toISOString().split('T')[0];
+    const toS   = future.toISOString().split('T')[0];
+
+    const [calendarData, chartData, yahooData] = await Promise.allSettled([
+        corsGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`),
+        corsGet(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=3y&interval=1d`),
+        corsGet(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=earnings`)
+    ]);
+
+    // Build price lookup from chart
+    const priceDays = [];
+    const priceByDate = {};
+    if (chartData.status === 'fulfilled') {
+        const cr = chartData.value?.chart?.result?.[0];
+        if (cr?.timestamp) {
+            const ts = cr.timestamp;
+            const q  = cr.indicators.quote[0];
+            for (let i = 0; i < ts.length; i++) {
+                if (q.close[i] == null) continue;
+                const d   = new Date(ts[i] * 1000);
+                const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+                const close = +q.close[i].toFixed(2);
+                priceDays.push({ date: key, close });
+                priceByDate[key] = { close, index: priceDays.length - 1 };
+            }
+        }
+    }
+
+    function getPriceReaction(dateStr) {
+        if (!dateStr) return null;
+        const entry = priceByDate[dateStr];
+        if (!entry) return null;
+        const next = priceDays[entry.index + 1];
+        return {
+            earningsClose: entry.close,
+            nextDayClose: next ? next.close : null,
+            nextDayChangePercent: next ? +(((next.close - entry.close) / entry.close) * 100).toFixed(2) : null
+        };
+    }
+
+    // Build revenue lookup from Yahoo
+    const revenueByQuarter = {};
+    let yahooQuarterly = [];
+    if (yahooData.status === 'fulfilled') {
+        try {
+            const earningsModule = yahooData.value?.quoteSummary?.result?.[0]?.earnings;
+            if (earningsModule) {
+                yahooQuarterly = earningsModule.earningsChart?.quarterly || [];
+                (earningsModule.financialsChart?.quarterly || []).forEach(item => {
+                    const match = item.date?.match(/^(\d)Q(\d{4})$/);
+                    if (match) {
+                        const qNum = parseInt(match[1]); const year = parseInt(match[2]);
+                        const endMonth = qNum * 3;
+                        const endDate = new Date(Date.UTC(year, endMonth, 0));
+                        const periodKey = `${year}-${String(endMonth).padStart(2,'0')}-${String(endDate.getUTCDate()).padStart(2,'0')}`;
+                        revenueByQuarter[periodKey] = { revenue: item.revenue?.raw ?? null, revenueFmt: item.revenue?.fmt ?? null };
+                    }
+                });
+            }
+        } catch(e) {}
+    }
+
+    if (yahooQuarterly.length === 0) throw new Error('No earnings data available.');
+
+    const quarters = yahooQuarterly.map(q => {
+        const periodDate = q.periodEndDate?.fmt || null;
+        const reportDate = q.reportedDate?.fmt || null;
+        const epsActual  = q.actual?.raw ?? null;
+        const epsEst     = q.estimate?.raw != null ? +(q.estimate.raw.toFixed(2)) : null;
+        let surpriseVal  = null;
+        if (epsActual != null && epsEst != null && epsEst !== 0) {
+            surpriseVal = +(((epsActual - epsEst) / Math.abs(epsEst)) * 100).toFixed(2);
+        }
+        let beatStatus = null;
+        if (epsActual != null && epsEst != null) {
+            beatStatus = epsActual > epsEst ? 'beat' : (epsActual < epsEst ? 'miss' : 'inline');
+        }
+        const reaction = getPriceReaction(reportDate);
+        const revData   = periodDate ? (revenueByQuarter[periodDate] || null) : null;
+        return {
+            quarter: periodDate, reportDate, epsActual, epsEstimate: epsEst,
+            epsSuprise: surpriseVal, surprisePercent: surpriseVal, beat: beatStatus,
+            revenue: revData?.revenue ?? null, revenueFmt: revData?.revenueFmt ?? null,
+            priceClose: reaction?.earningsClose ?? null,
+            nextDayClose: reaction?.nextDayClose ?? null,
+            nextDayChangePercent: reaction?.nextDayChangePercent ?? null
+        };
+    }).sort((a, b) => (b.quarter || '').localeCompare(a.quarter || ''));
+
+    let nextDate = null; let nextEst = null; let nextRevEst = null;
+    if (calendarData.status === 'fulfilled' && Array.isArray(calendarData.value?.earningsCalendar)) {
+        const upcoming = calendarData.value.earningsCalendar
+            .filter(c => c.date).sort((a, b) => new Date(a.date) - new Date(b.date));
+        if (upcoming.length > 0) {
+            nextDate   = upcoming[0].date;
+            nextEst    = upcoming[0].epsEstimate != null ? +(upcoming[0].epsEstimate).toFixed(2) : null;
+            nextRevEst = upcoming[0].revenueEstimate ?? null;
+        }
+    }
+
+    return { symbol, quarters, nextEarningsDate: nextDate, nextEarningsEstimate: nextEst, nextRevenueEstimate: nextRevEst };
+}
+
 // 9c. Render Economic Indicators Tab
 let currentIndicatorTier = 'Tier 1 (Primary)'; // Default tier state
 let cachedIndicators = null; // Memory cache to avoid repeated fetch
@@ -816,15 +1113,7 @@ async function renderEconomicIndicators(forceFetch = false) {
     if (!cachedIndicators || forceFetch) {
         loadingEl.style.display = 'block';
         containerEl.innerHTML = '';
-        try {
-            const resp = await fetch(`${API_BASE}/api/indicators`);
-            if (!resp.ok) throw new Error("Could not fetch indicator releases.");
-            cachedIndicators = await resp.json();
-        } catch (e) {
-            loadingEl.style.display = 'none';
-            containerEl.innerHTML = `<div style="padding:2rem; text-align:center; color:var(--text-muted);">${e.message}</div>`;
-            return;
-        }
+        cachedIndicators = getStaticIndicators();
     }
 
     loadingEl.style.display = 'none';
@@ -1275,15 +1564,21 @@ function setupEventListeners() {
         
         searchTimeout = setTimeout(async () => {
             try {
-                const response = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
-                if (!response.ok) throw new Error('Search request failed');
-                const results = await response.json();
-                
+                const searchUrl = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=0`;
+                const data = await corsGet(searchUrl);
+                const results = (data.quotes || [])
+                    .filter(q => q.quoteType === 'EQUITY' || q.quoteType === 'ETF')
+                    .map(q => ({
+                        symbol: q.symbol,
+                        name: q.shortname || q.longname || q.symbol,
+                        exchange: q.exchange,
+                        sector: q.industry || q.sector || COMPANY_MAP[q.symbol?.toUpperCase()]?.sector || 'General'
+                    })).slice(0, 8);
                 if (searchInput.value.trim() === query) {
                     renderSearchDropdown(results, query);
                 }
             } catch (err) {
-                console.error("Live search failed, falling back to local suggestions:", err);
+                console.error('Live search failed, falling back to local suggestions:', err);
                 if (searchInput.value.trim() === query) {
                     const queryLower = query.toLowerCase();
                     const filtered = SUGGESTED_SYMBOLS.filter(sym => sym.toLowerCase().includes(queryLower));
@@ -1575,4 +1870,222 @@ function simulateIndexTickerFluctuations() {
         
         lucide.createIcons();
     }, 8000);
+}
+
+// ─── Static Economic Indicators Dataset (ported from server.js, no backend needed) ───
+function getStaticIndicators() {
+    const now = new Date();
+    const INDICATOR_MAP = {
+        'jobs': {
+            name: 'Jobs Data (Non-Farm Payrolls)', tier: 'Tier 1 (Primary)', frequency: 'Monthly (1st Friday)',
+            description: 'Measures payroll employment changes, indicating underlying business hiring momentum.',
+            sourceName: 'Bureau of Labor Statistics (BLS)', sourceUrl: 'https://www.bls.gov/',
+            triggers: { increase: 'Strong hiring, business growth.', decrease: 'Layoffs, corporate cost-cutting.',
+                reaction: 'Too Strong: Fed hikes/inflation fears (Stocks Fall) | Moderate Growth: Healthy economy (Stocks Rise) | Too Weak: Recession fears (Stocks Fall)' },
+            defaultHistory: [
+                { period: 'July 2, 2026', value: '+215K', status: 'Healthy', change: 'up' },
+                { period: 'June 5, 2026', value: '+272K', status: 'Too Strong', change: 'up' },
+                { period: 'May 8, 2026', value: '+165K', status: 'Weak', change: 'down' },
+                { period: 'April 3, 2026', value: '+303K', status: 'Too Strong', change: 'up' },
+                { period: 'March 6, 2026', value: '+236K', status: 'Healthy', change: 'up' },
+                { period: 'February 6, 2026', value: '+229K', status: 'Healthy', change: 'up' }
+            ], defaultNext: '2026-08-07', defaultTime: '8:30 AM ET', rollType: 'firstFriday'
+        },
+        'unemployment': {
+            name: 'Unemployment Rate', tier: 'Tier 1 (Primary)', frequency: 'Monthly (1st Friday)',
+            description: 'Percentage of total labor force actively seeking employment but currently jobless.',
+            sourceName: 'Bureau of Labor Statistics (BLS)', sourceUrl: 'https://www.bls.gov/',
+            triggers: { increase: 'Layoffs, slowing hiring velocity.', decrease: 'Robust employment creation.',
+                reaction: 'Increase: Recession threat (Stocks Fall) | Decrease: Economic health (Stocks Rise, but if too low, wage inflation concerns trigger rate fears)' },
+            defaultHistory: [
+                { period: 'July 2, 2026', value: '4.2%', status: 'Low', change: 'down' },
+                { period: 'June 5, 2026', value: '4.3%', status: 'Stable', change: 'stable' },
+                { period: 'May 8, 2026', value: '4.3%', status: 'Stable', change: 'stable' },
+                { period: 'April 3, 2026', value: '4.3%', status: 'Stable', change: 'down' },
+                { period: 'March 6, 2026', value: '4.4%', status: 'Elevated', change: 'up' },
+                { period: 'February 6, 2026', value: '4.1%', status: 'Low', change: 'down' }
+            ], defaultNext: '2026-08-07', defaultTime: '8:30 AM ET', rollType: 'firstFriday'
+        },
+        'cpi': {
+            name: 'Inflation (CPI-U)', tier: 'Tier 1 (Primary)', frequency: 'Monthly (Mid-month)',
+            description: 'Consumer Price Index measures average price changes of a basket of consumer goods.',
+            sourceName: 'Bureau of Labor Statistics (BLS)', sourceUrl: 'https://www.bls.gov/',
+            triggers: { increase: 'High demand, supply shortages, rising energy/wage costs.', decrease: 'Cooling consumer demand, commodity pullbacks, higher interest rates.',
+                reaction: 'Increase: Forces Fed rate hikes (Stocks Fall) | Decrease: Allows Fed rate cuts (Stocks Rise)' },
+            defaultHistory: [
+                { period: 'July 14, 2026', value: '3.5% YoY', status: 'Sticky', change: 'up' },
+                { period: 'June 12, 2026', value: '3.3% YoY', status: 'Elevated', change: 'down' },
+                { period: 'May 13, 2026', value: '3.4% YoY', status: 'Elevated', change: 'down' },
+                { period: 'April 10, 2026', value: '3.5% YoY', status: 'Sticky', change: 'up' },
+                { period: 'March 11, 2026', value: '3.2% YoY', status: 'Sticky', change: 'up' },
+                { period: 'February 12, 2026', value: '3.1% YoY', status: 'Cooling', change: 'down' }
+            ], defaultNext: '2026-08-12', defaultTime: '8:30 AM ET', rollType: 'monthly30'
+        },
+        'fed_rates': {
+            name: 'Fed Interest Rates (FOMC)', tier: 'Tier 1 (Primary)', frequency: '8 Times / Year',
+            description: 'Federal Funds Rate target determined by the Federal Open Market Committee.',
+            sourceName: 'Federal Reserve Board', sourceUrl: 'https://www.federalreserve.gov/',
+            triggers: { increase: 'Fed cools down an overheating economy/inflation.', decrease: 'Fed stimulates a slowing economy or addresses market stress.',
+                reaction: 'Hike: Borrowing gets expensive (Growth Stocks Fall) | Cut: Cheaper capital & liquidity (Stocks Rally)' },
+            defaultHistory: [
+                { period: 'June 17, 2026', value: '3.50% - 3.75%', status: 'Hold', change: 'stable' },
+                { period: 'May 6, 2026', value: '3.50% - 3.75%', status: 'Hold', change: 'stable' },
+                { period: 'March 18, 2026', value: '3.50% - 3.75%', status: 'Hold', change: 'stable' },
+                { period: 'January 28, 2026', value: '3.50% - 3.75%', status: 'Hold', change: 'stable' },
+                { period: 'December 10, 2025', value: '3.50% - 3.75%', status: 'Hold', change: 'stable' },
+                { period: 'October 29, 2025', value: '3.50% - 3.75%', status: 'Cut (-25bps)', change: 'down' }
+            ], defaultNext: '2026-07-29', defaultTime: '2:00 PM ET', rollType: 'fomc45'
+        },
+        'ppi': {
+            name: 'Producer Price Index (PPI)', tier: 'Tier 2 (Secondary)', frequency: 'Monthly (Day before CPI)',
+            description: 'Measures the average changes in prices received by domestic producers for their output.',
+            sourceName: 'Bureau of Labor Statistics (BLS)', sourceUrl: 'https://www.bls.gov/',
+            triggers: { increase: 'Higher raw material, energy, or manufacturing costs.', decrease: 'Falling supply costs, commodity pullbacks.',
+                reaction: 'Increase: Signals future CPI spike (Stocks Fall) | Decrease: Signals future CPI drop (Stocks Rise)' },
+            defaultHistory: [
+                { period: 'July 13, 2026', value: '+0.2% MoM', status: 'Moderate', change: 'up' },
+                { period: 'June 11, 2026', value: '-0.2% MoM', status: 'Cooling', change: 'down' },
+                { period: 'May 12, 2026', value: '+0.5% MoM', status: 'Hot', change: 'up' },
+                { period: 'April 9, 2026', value: '+0.2% MoM', status: 'Moderate', change: 'stable' },
+                { period: 'March 10, 2026', value: '+0.6% MoM', status: 'Hot', change: 'up' },
+                { period: 'February 11, 2026', value: '+0.3% MoM', status: 'Moderate', change: 'up' }
+            ], defaultNext: '2026-08-11', defaultTime: '8:30 AM ET', rollType: 'monthly30'
+        },
+        'pmi': {
+            name: 'PMI / ISM Mfg Index', tier: 'Tier 2 (Secondary)', frequency: 'Monthly (1st business day)',
+            description: 'Index based on surveys of purchasing managers in the manufacturing sector.',
+            sourceName: 'Institute for Supply Management (ISM)', sourceUrl: 'https://www.ismworld.org/',
+            triggers: { increase: 'Expanding factory/service orders and economic activity (>50).', decrease: 'Contracting business activity, declining demand (<50).',
+                reaction: 'Rise Above 50: Strong corporate earnings outlook (Stocks Rise) | Drop Below 50: Slowdown/recession signals (Stocks Fall)' },
+            defaultHistory: [
+                { period: 'July 1, 2026', value: '48.5', status: 'Contraction', change: 'down' },
+                { period: 'June 1, 2026', value: '48.7', status: 'Contraction', change: 'down' },
+                { period: 'May 1, 2026', value: '49.2', status: 'Contraction', change: 'down' },
+                { period: 'April 1, 2026', value: '50.3', status: 'Expansion', change: 'up' },
+                { period: 'March 2, 2026', value: '47.8', status: 'Contraction', change: 'down' },
+                { period: 'February 2, 2026', value: '49.1', status: 'Contraction', change: 'up' }
+            ], defaultNext: '2026-08-03', defaultTime: '10:00 AM ET', rollType: 'monthly30'
+        },
+        'gdp': {
+            name: 'GDP (QoQ Annualized)', tier: 'Tier 2 (Secondary)', frequency: 'Quarterly (3 Iterations)',
+            description: 'Broadest measure of national economic activity and aggregate market production.',
+            sourceName: 'Bureau of Economic Analysis (BEA)', sourceUrl: 'https://www.bea.gov/',
+            triggers: { increase: 'Higher consumer spending, investments, exports.', decrease: 'Reduced spending, trade deficits, economic slowdown.',
+                reaction: 'Strong GDP: High corporate earnings (Stocks Rise) | Negative GDP (2+ Qtrs): Technical recession (Stocks Fall)' },
+            defaultHistory: [
+                { period: 'June 25, 2026 (Final)', value: '+2.1%', status: 'Healthy', change: 'stable' },
+                { period: 'March 26, 2026', value: '+3.4%', status: 'Strong', change: 'up' },
+                { period: 'December 22, 2025', value: '+4.9%', status: 'Very Strong', change: 'up' },
+                { period: 'September 28, 2025', value: '+2.1%', status: 'Healthy', change: 'stable' },
+                { period: 'June 27, 2025', value: '+2.2%', status: 'Healthy', change: 'stable' },
+                { period: 'March 28, 2025', value: '+3.2%', status: 'Strong', change: 'up' }
+            ], defaultNext: '2026-07-30', defaultTime: '8:30 AM ET', rollType: 'quarterly90'
+        },
+        'retail_sales': {
+            name: 'Retail Sales', tier: 'Tier 2 (Secondary)', frequency: 'Monthly (Mid-month)',
+            description: 'Measures consumer spending on goods, which drives ~70% of US economic output.',
+            sourceName: 'US Census Bureau', sourceUrl: 'https://www.census.gov/',
+            triggers: { increase: 'Confident consumers spending freely on goods/services.', decrease: 'Tighter budgets, debt stress, lower consumer confidence.',
+                reaction: 'Increase: Retail/Tech Stocks Rise | Decrease: Slows economy (Consumer Stocks Fall)' },
+            defaultHistory: [
+                { period: 'July 15, 2026', value: '0.0% MoM', status: 'Flat', change: 'stable' },
+                { period: 'June 16, 2026', value: '+0.1% MoM', status: 'Soft', change: 'up' },
+                { period: 'May 14, 2026', value: '-0.2% MoM', status: 'Weak', change: 'down' },
+                { period: 'April 15, 2026', value: '+0.6% MoM', status: 'Strong', change: 'up' },
+                { period: 'March 13, 2026', value: '+0.9% MoM', status: 'Strong', change: 'up' },
+                { period: 'February 13, 2026', value: '-1.1% MoM', status: 'Weak', change: 'down' }
+            ], defaultNext: '2026-08-14', defaultTime: '8:30 AM ET', rollType: 'monthly30'
+        },
+        'jobless_claims': {
+            name: 'Initial Jobless Claims', tier: 'Tier 2 (Secondary)', frequency: 'Weekly (Thursdays)',
+            description: 'Weekly count of new applications for unemployment benefits.',
+            sourceName: 'Department of Labor (DOL)', sourceUrl: 'https://www.dol.gov/',
+            triggers: { increase: 'Sudden spike in new unemployment filings.', decrease: 'Stable labor market, low corporate layoffs.',
+                reaction: 'Spike: Early warning of labor weakness (Market Volatility) | Low Numbers: Labor resilience (Stabilizes Stocks)' },
+            defaultHistory: [
+                { period: 'July 16, 2026', value: '222K', status: 'Low Layoffs', change: 'down' },
+                { period: 'July 9, 2026', value: '238K', status: 'Stable', change: 'up' },
+                { period: 'July 2, 2026', value: '234K', status: 'Stable', change: 'up' },
+                { period: 'June 25, 2026', value: '233K', status: 'Stable', change: 'down' },
+                { period: 'June 18, 2026', value: '243K', status: 'Elevated', change: 'up' },
+                { period: 'June 11, 2026', value: '242K', status: 'Elevated', change: 'up' }
+            ], defaultNext: '2026-07-23', defaultTime: '8:30 AM ET', rollType: 'weekly7'
+        },
+        'eci': {
+            name: 'Employment Cost Index (ECI)', tier: 'Tier 2 (Secondary)', frequency: 'Quarterly',
+            description: 'Measures the growth of employee compensation (wages and benefits).',
+            sourceName: 'Bureau of Labor Statistics (BLS)', sourceUrl: 'https://www.bls.gov/',
+            triggers: { increase: 'Companies raising wages to attract scarce talent.', decrease: 'Excess labor supply easing wage pressures.',
+                reaction: 'Spike: Wage-push inflation fears (Stocks Fall) | Steady: Low wage inflation (Market Neutral/Positive)' },
+            defaultHistory: [
+                { period: 'April 30, 2026', value: '+1.2% QoQ', status: 'Elevated', change: 'up' },
+                { period: 'January 30, 2026', value: '+0.9% QoQ', status: 'Moderate', change: 'down' },
+                { period: 'October 31, 2025', value: '+1.1% QoQ', status: 'Elevated', change: 'up' },
+                { period: 'July 31, 2025', value: '+1.0% QoQ', status: 'Moderate', change: 'down' },
+                { period: 'April 30, 2025', value: '+1.2% QoQ', status: 'Elevated', change: 'up' },
+                { period: 'January 31, 2025', value: '+0.9% QoQ', status: 'Moderate', change: 'down' }
+            ], defaultNext: '2026-07-31', defaultTime: '8:30 AM ET', rollType: 'quarterly90'
+        },
+        'sentiment': {
+            name: 'Consumer Sentiment', tier: 'Tier 2 (Secondary)', frequency: 'Monthly',
+            description: 'University of Michigan Index survey tracking consumer confidence in finances and jobs.',
+            sourceName: 'University of Michigan', sourceUrl: 'https://data.sca.isr.umich.edu/',
+            triggers: { increase: 'Households feel secure about job prospects and personal finances.', decrease: 'Concerns over inflation, layoffs, or market stability.',
+                reaction: 'High: Expect high future consumer spending (Stocks Rise) | Low: Caution in household spending (Defensive Shift)' },
+            defaultHistory: [
+                { period: 'June 26, 2026', value: '68.2', status: 'Soft', change: 'down' },
+                { period: 'May 29, 2026', value: '69.1', status: 'Soft', change: 'down' },
+                { period: 'April 24, 2026', value: '77.2', status: 'Optimistic', change: 'down' },
+                { period: 'March 27, 2026', value: '79.4', status: 'Optimistic', change: 'up' },
+                { period: 'February 27, 2026', value: '76.9', status: 'Stable', change: 'down' },
+                { period: 'January 30, 2026', value: '79.0', status: 'Optimistic', change: 'up' }
+            ], defaultNext: '2026-07-31', defaultTime: '10:00 AM ET', rollType: 'monthly45'
+        }
+    };
+
+    return Object.keys(INDICATOR_MAP).map(key => {
+        const schema = INDICATOR_MAP[key];
+        let nextDateStr = schema.defaultNext;
+        let historyList = [...schema.defaultHistory];
+        const nextAnnounceDateObj = new Date(nextDateStr + 'T12:00:00');
+
+        if (nextAnnounceDateObj < now) {
+            const simVals = {
+                jobs: '+210K', unemployment: '4.2%', cpi: '3.2% YoY', fed_rates: '3.50% - 3.75%',
+                ppi: '+0.1% MoM', pmi: '49.0', gdp: '+2.0%', retail_sales: '+0.2% MoM',
+                jobless_claims: '230K', eci: '+1.0% QoQ', sentiment: '72.0'
+            };
+            const simStats = {
+                jobs: ['Healthy','up'], unemployment: ['Stable','stable'], cpi: ['Cooling','down'],
+                fed_rates: ['Hold','stable'], ppi: ['Moderate','stable'], pmi: ['Contraction','up'],
+                gdp: ['Healthy','stable'], retail_sales: ['Healthy','up'], jobless_claims: ['Stable','down'],
+                eci: ['Moderate','down'], sentiment: ['Optimistic','up']
+            };
+            const monthsNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+            const formattedPassedPeriod = `${monthsNames[nextAnnounceDateObj.getMonth()]} ${nextAnnounceDateObj.getDate()}, ${nextAnnounceDateObj.getFullYear()}`;
+            historyList.unshift({ period: formattedPassedPeriod, value: simVals[key] || 'N/A', status: simStats[key]?.[0] || 'Stable', change: simStats[key]?.[1] || 'stable' });
+            if (historyList.length > 6) historyList.pop();
+
+            let daysAhead = 30;
+            if (schema.rollType === 'firstFriday') {
+                let d = new Date(nextAnnounceDateObj); d.setDate(1); d.setMonth(d.getMonth() + 1);
+                while (d.getDay() !== 5) d.setDate(d.getDate() + 1);
+                nextDateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            } else {
+                if (schema.rollType === 'weekly7') daysAhead = 7;
+                else if (schema.rollType === 'quarterly90') daysAhead = 90;
+                else if (schema.rollType === 'monthly45') daysAhead = 45;
+                else if (schema.rollType === 'fomc45') daysAhead = 45;
+                const d2 = new Date(nextAnnounceDateObj.getTime() + daysAhead * 86400000);
+                nextDateStr = `${d2.getFullYear()}-${String(d2.getMonth()+1).padStart(2,'0')}-${String(d2.getDate()).padStart(2,'0')}`;
+            }
+        }
+
+        return {
+            id: key, name: schema.name, tier: schema.tier, frequency: schema.frequency,
+            nextDate: nextDateStr, releaseTime: schema.defaultTime,
+            description: schema.description, sourceName: schema.sourceName, sourceUrl: schema.sourceUrl,
+            triggers: schema.triggers, history: historyList
+        };
+    });
 }
