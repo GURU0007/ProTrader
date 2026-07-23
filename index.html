@@ -287,16 +287,22 @@
                         <div class="tab-panel" id="earnings-tab">
                             <div class="history-table-wrapper">
                                 <div class="table-header-info">
-                                    <div class="table-header-flex" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                                    <div class="table-header-flex" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
                                         <div>
                                             <h3>Quarterly Earnings Results</h3>
-                                            <p>Recent quarters: EPS actual vs estimate, surprise %, beat/miss, and next-day price reaction.</p>
+                                            <p>EPS actual vs estimate, surprise %, beat/miss, report dates, and next-day price reaction.</p>
                                         </div>
-                                        <div id="earnings-next-meta" style="display:none; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); padding:8px 16px; border-radius:8px; font-size:0.85rem; line-height:1.4;">
-                                            <span style="color:var(--text-muted);">Next Earnings:</span> 
-                                            <span id="earnings-next-date" style="font-weight:700; color:#fff; margin-right:12px;">—</span>
-                                            <span style="color:var(--text-muted);">Estimate:</span> 
-                                            <span id="earnings-next-estimate" style="font-weight:700; color:var(--primary-color);">—</span>
+                                    </div>
+                                    <!-- Next Earnings Prominent Banner -->
+                                    <div id="earnings-next-meta" style="display:none; margin-top:12px; background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.3); border-radius:12px; padding:14px 20px;">
+                                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                                            <i data-lucide="calendar-clock" style="width:15px;height:15px;color:var(--primary-color);"></i>
+                                            <span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary-color);">Next Earnings Report</span>
+                                        </div>
+                                        <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 16px;">
+                                            <span id="earnings-next-date" style="font-size:1.1rem;font-weight:800;color:#fff;font-family:var(--font-heading);">—</span>
+                                            <span id="earnings-next-countdown" style="font-size:0.78rem;color:var(--primary-color);font-weight:600;"></span>
+                                            <span id="earnings-next-estimate" style="font-size:0.85rem;font-weight:600;color:var(--text-muted);"></span>
                                         </div>
                                     </div>
                                 </div>
@@ -308,13 +314,13 @@
                                     <table class="history-table" id="earnings-table" style="display:none;">
                                         <thead>
                                             <tr>
-                                                <th>Quarter</th>
+                                                <th>Quarter End</th>
+                                                <th>Report Date</th>
                                                 <th>EPS Actual</th>
                                                 <th>EPS Estimate</th>
                                                 <th>Surprise %</th>
                                                 <th>Beat / Miss</th>
-                                                <th>24h Price Reaction</th>
-                                                <th>24h % Move</th>
+                                                <th>Day-After %</th>
                                             </tr>
                                         </thead>
                                         <tbody id="earnings-rows">
@@ -324,6 +330,7 @@
                                 </div>
                             </div>
                         </div>
+
 
                         <!-- Economic Indicators Tab -->
                         <div class="tab-panel" id="indicators-tab">

@@ -893,37 +893,48 @@ async function renderEarningsTab(symbol) {
     const tbody     = document.getElementById('earnings-rows');
     if (!loadingEl || !tableEl || !tbody) return;
 
-    // Reset state
     loadingEl.style.display = 'block';
     tableEl.style.display   = 'none';
     emptyEl.style.display   = 'none';
     tbody.innerHTML = '';
 
     try {
-        const resp = await fetchEarningsData(symbol);
-        const data = resp;
-
+        const data = await fetchEarningsData(symbol);
         loadingEl.style.display = 'none';
 
-        // Render upcoming earnings metadata block
-        const nextMetaEl = document.getElementById('earnings-next-meta');
-        const nextDateEl = document.getElementById('earnings-next-date');
-        const nextEstEl  = document.getElementById('earnings-next-estimate');
+        // ── Next Earnings Banner ──
+        const nextMetaEl      = document.getElementById('earnings-next-meta');
+        const nextDateEl      = document.getElementById('earnings-next-date');
+        const nextCountdownEl = document.getElementById('earnings-next-countdown');
+        const nextEstEl       = document.getElementById('earnings-next-estimate');
 
         if (nextMetaEl && nextDateEl && nextEstEl) {
             if (data.nextEarningsDate) {
-                // Parse date string (YYYY-MM-DD) cleanly to avoid timezone shift shifts
-                const parts = data.nextEarningsDate.split('-');
-                const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
-                const formattedDate = dObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                
-                nextDateEl.textContent = formattedDate;
-                let estText = data.nextEarningsEstimate != null ? `$${data.nextEarningsEstimate.toFixed(2)} EPS` : '';
-                if (data.nextRevenueEstimate != null) {
-                    const revB = (data.nextRevenueEstimate / 1e9).toFixed(2);
-                    estText += (estText ? '  ·  ' : '') + `$${revB}B Rev`;
+                const [y, m, d]   = data.nextEarningsDate.split('-').map(Number);
+                const dObj        = new Date(y, m - 1, d);
+                const months      = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                nextDateEl.textContent = `${months[m-1]} ${d}, ${y}`;
+
+                // Days-until countdown
+                if (nextCountdownEl) {
+                    const msUntil = dObj - new Date();
+                    const daysLeft = Math.ceil(msUntil / 86400000);
+                    if (daysLeft > 0) {
+                        nextCountdownEl.textContent = `· in ${daysLeft} day${daysLeft !== 1 ? 's' : ''}`;
+                    } else if (daysLeft === 0) {
+                        nextCountdownEl.textContent = '· TODAY';
+                        nextCountdownEl.style.color = '#f59e0b';
+                    }
                 }
-                nextEstEl.textContent = estText || 'N/A';
+
+                // Estimate text
+                let estText = '';
+                if (data.nextEarningsEstimate != null) estText = `Estimate: $${data.nextEarningsEstimate.toFixed(2)} EPS`;
+                if (data.nextRevenueEstimate  != null) {
+                    const revB = (data.nextRevenueEstimate / 1e9).toFixed(2);
+                    estText += (estText ? '  ·  ' : 'Rev Estimate: ') + `$${revB}B Rev`;
+                }
+                nextEstEl.textContent = estText;
                 nextMetaEl.style.display = 'block';
             } else {
                 nextMetaEl.style.display = 'none';
@@ -935,22 +946,34 @@ async function renderEarningsTab(symbol) {
             return;
         }
 
+        const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        // Helper: format "YYYY-MM-DD" → "Apr 30, 2026"
+        function fmtDate(dateStr) {
+            if (!dateStr) return null;
+            const [y, m, d] = dateStr.split('-').map(Number);
+            return `${MONTHS[m-1]} ${d}, ${y}`;
+        }
+
         data.quarters.forEach(q => {
             const row = document.createElement('tr');
 
-            // ── Quarter label + report date sub-label ──
-            const reportSubLabel = q.reportDate
-                ? (() => {
-                    const [yr, mo, dy] = q.reportDate.split('-');
-                    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-                    return `<div style="font-size:0.68rem;color:var(--text-muted);margin-top:2px;">reported ${months[parseInt(mo)-1]} ${parseInt(dy)}</div>`;
-                  })()
-                : '';
+            // ── Quarter End cell (full date) ──
+            const quarterEndFmt = fmtDate(q.periodDate) || q.quarter || 'N/A';
+
+            // ── Report Date cell ──
+            let reportDateHtml;
+            if (q.reportDate) {
+                reportDateHtml = `<span class="font-heading" style="font-size:0.85rem;">${fmtDate(q.reportDate)}</span>`;
+            } else if (q.estimatedReportDate) {
+                reportDateHtml = `<span style="color:var(--text-muted);font-size:0.82rem;">~${fmtDate(q.estimatedReportDate)}</span><div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">estimated</div>`;
+            } else {
+                reportDateHtml = '<span class="text-muted">N/A</span>';
+            }
 
             // ── EPS ──
-            const epsActual = q.epsActual  != null ? `$${q.epsActual.toFixed(2)}`  : '<span class="text-muted">N/A</span>';
+            const epsActual = q.epsActual   != null ? `$${q.epsActual.toFixed(2)}`   : '<span class="text-muted">N/A</span>';
             const epsEst    = q.epsEstimate != null ? `$${q.epsEstimate.toFixed(2)}` : '<span class="text-muted">N/A</span>';
-
 
             // ── Surprise % ──
             let surpriseHtml = '<span class="text-muted">N/A</span>';
@@ -960,70 +983,46 @@ async function renderEarningsTab(symbol) {
                 surpriseHtml = `<span class="${cls} font-heading">${sign}${q.surprisePercent.toFixed(2)}%</span>`;
             }
 
-            // ── Beat / Miss / Inline badge ──
+            // ── Beat / Miss badge ──
             let beatHtml = '<span class="text-muted">—</span>';
-            if (q.beat === true || q.beat === 'beat') {
+            if (q.beat === 'beat') {
                 beatHtml = `<span class="earnings-badge beat">✅ BEAT</span>`;
-            } else if (q.beat === false || q.beat === 'miss') {
+            } else if (q.beat === 'miss') {
                 beatHtml = `<span class="earnings-badge miss">❌ MISS</span>`;
             } else if (q.beat === 'inline') {
-                beatHtml = `<span class="earnings-badge inline" style="background: rgba(241, 196, 15, 0.1); border: 1px solid rgba(241, 196, 15, 0.3); color: #f1c40f; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">🤝 INLINE</span>`;
+                beatHtml = `<span class="earnings-badge inline" style="background:rgba(241,196,15,0.1);border:1px solid rgba(241,196,15,0.3);color:#f1c40f;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:700;">🤝 INLINE</span>`;
             }
 
-            // ── 24h Price Reaction (Earnings Day Close → Next Trading Day Close) ──
-            // Earnings are reported after 4 PM ET close — the real market reaction
-            // happens the NEXT trading day. We show that full 24-hour window.
-            let reactionHtml = '<span class="text-muted">N/A</span>';
-            let tradePct = null;
-
-            if (q.nextDayClose != null && q.priceClose != null) {
-                // Best case: we have both earnings-day close AND next-day close
-                tradePct = q.nextDayChangePercent;
-                const dir = tradePct >= 0 ? '▲' : '▼';
-                const cls = tradePct >= 0 ? 'text-up' : 'text-down';
-                reactionHtml = `
-                    <div style="display:flex;flex-direction:column;gap:2px;">
-                        <span class="font-heading" style="font-size:0.82rem;">
-                            $${q.priceClose.toFixed(2)}
-                            <span style="color:var(--text-muted);margin:0 3px;">→</span>
-                            $${q.nextDayClose.toFixed(2)}
-                        </span>
-                        <span style="font-size:0.7rem;color:var(--text-muted);">
-                            Earn. close → next day close
-                        </span>
-                    </div>`;
-            }
-
-            // ── 24h % Change badge ──
-            let tradeHtml = '<span class="text-muted">N/A</span>';
+            // ── Day-After % Move ──
+            let dayAfterHtml = '<span class="text-muted">N/A</span>';
+            const tradePct = q.nextDayChangePercent;
             if (tradePct != null) {
-                const cls  = tradePct >= 0 ? 'text-up' : 'text-down';
-                const sign = tradePct >= 0 ? '+' : '';
-                const icon = tradePct >= 0 ? 'trending-up' : 'trending-down';
-                const bg   = tradePct >= 0 ? 'var(--green-up-bg)' : 'var(--red-down-bg)';
+                const cls    = tradePct >= 0 ? 'text-up' : 'text-down';
+                const sign   = tradePct >= 0 ? '+' : '';
+                const icon   = tradePct >= 0 ? 'trending-up' : 'trending-down';
+                const bg     = tradePct >= 0 ? 'var(--green-up-bg)' : 'var(--red-down-bg)';
                 const border = tradePct >= 0 ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)';
-                tradeHtml = `
-                    <div style="display:flex;flex-direction:column;align-items:center;gap:3px;">
-                        <span class="${cls} font-heading" style="font-size:1rem;font-weight:800;display:inline-flex;align-items:center;gap:4px;
-                            background:${bg};border:1px solid ${border};padding:4px 10px;border-radius:8px;">
-                            <i data-lucide="${icon}" style="width:13px;height:13px;"></i>
+                const nextDayFmt = q.nextDayDate ? fmtDate(q.nextDayDate) : '';
+                dayAfterHtml = `
+                    <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                        <span class="${cls} font-heading" style="font-size:0.95rem;font-weight:800;display:inline-flex;align-items:center;gap:4px;
+                            background:${bg};border:1px solid ${border};padding:3px 9px;border-radius:7px;">
+                            <i data-lucide="${icon}" style="width:12px;height:12px;"></i>
                             ${sign}${tradePct.toFixed(2)}%
                         </span>
-                        <span style="font-size:0.68rem;color:var(--text-muted);">24h after report</span>
+                        ${nextDayFmt ? `<span style="font-size:0.63rem;color:var(--text-muted);">${nextDayFmt}</span>` : ''}
                     </div>`;
             }
 
-
             row.innerHTML = `
-                <td class="history-date">${q.quarter}${reportSubLabel}</td>
+                <td class="history-date">${quarterEndFmt}</td>
+                <td>${reportDateHtml}</td>
                 <td class="history-price font-heading">${epsActual}</td>
                 <td class="history-price">${epsEst}</td>
                 <td class="history-change">${surpriseHtml}</td>
                 <td>${beatHtml}</td>
-                <td>${reactionHtml}</td>
-                <td>${tradeHtml}</td>
+                <td>${dayAfterHtml}</td>
             `;
-
             tbody.appendChild(row);
         });
 
@@ -1035,6 +1034,9 @@ async function renderEarningsTab(symbol) {
         emptyEl.style.display = 'block';
     }
 }
+
+
+
 
 // Browser-side earnings fetch — uses Finnhub stock/earnings + volume-based report date detection
 async function fetchEarningsData(symbol) {
