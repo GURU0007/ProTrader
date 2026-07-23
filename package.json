@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "main": "app.js",
+  "homepage": "https://GURU0007.github.io/ProTrader",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "predeploy": "git add . && git commit -m \"Commit changes before deployment\" || true",
+    "deploy": "gh-pages -d . -e node_modules"
   },
   "keywords": [],
   "author": "",
@@ -12,5 +15,8 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
   }
 }
