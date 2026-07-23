@@ -979,18 +979,6 @@ async function renderEarningsTab(symbol) {
                     </div>`;
             }
 
-            // ── Revenue ──
-            let revenueHtml = '<span class="text-muted">N/A</span>';
-            if (q.revenueFmt) {
-                revenueHtml = `<span class="font-heading" style="font-size:0.88rem;">${q.revenueFmt}</span>`;
-            } else if (q.revenue != null) {
-                const rev = q.revenue;
-                let revStr;
-                if (rev >= 1e9) revStr = `$${(rev / 1e9).toFixed(2)}B`;
-                else if (rev >= 1e6) revStr = `$${(rev / 1e6).toFixed(1)}M`;
-                else revStr = `$${rev.toLocaleString()}`;
-                revenueHtml = `<span class="font-heading" style="font-size:0.88rem;">${revStr}</span>`;
-            }
 
             row.innerHTML = `
                 <td class="history-date">${q.quarter}</td>
@@ -998,10 +986,10 @@ async function renderEarningsTab(symbol) {
                 <td class="history-price">${epsEst}</td>
                 <td class="history-change">${surpriseHtml}</td>
                 <td>${beatHtml}</td>
-                <td>${revenueHtml}</td>
                 <td>${reactionHtml}</td>
                 <td>${tradeHtml}</td>
             `;
+
             tbody.appendChild(row);
         });
 
@@ -1014,24 +1002,24 @@ async function renderEarningsTab(symbol) {
     }
 }
 
-// Browser-side earnings fetch (replaces /api/earnings backend call)
+// Browser-side earnings fetch — uses Finnhub stock/earnings (replaces broken Yahoo v10 quoteSummary)
 async function fetchEarningsData(symbol) {
     symbol = symbol.toUpperCase();
-    const UA_HINT = {}; // allorigins proxies for us, no UA needed
     const FINNHUB_KEY = 'd9f970pr01qu5nhdgu70d9f970pr01qu5nhdgu7g';
-    const now = new Date();
+    const now    = new Date();
     const future = new Date(now.getTime() + 120 * 86400 * 1000);
-    const fromS = now.toISOString().split('T')[0];
-    const toS   = future.toISOString().split('T')[0];
+    const fromS  = now.toISOString().split('T')[0];
+    const toS    = future.toISOString().split('T')[0];
 
-    const [calendarData, chartData, yahooData] = await Promise.allSettled([
-        corsGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`),
+    // Fetch in parallel: historical EPS, price chart (for reaction), upcoming calendar
+    const [epsData, chartData, calendarData] = await Promise.allSettled([
+        corsGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${FINNHUB_KEY}`, true),
         corsGet(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=3y&interval=1d`),
-        corsGet(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=earnings`)
+        corsGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`, true)
     ]);
 
-    // Build price lookup from chart
-    const priceDays = [];
+    // ── Build price-by-date lookup from Yahoo chart ──
+    const priceDays   = [];
     const priceByDate = {};
     if (chartData.status === 'fulfilled') {
         const cr = chartData.value?.chart?.result?.[0];
@@ -1051,78 +1039,89 @@ async function fetchEarningsData(symbol) {
 
     function getPriceReaction(dateStr) {
         if (!dateStr) return null;
-        const entry = priceByDate[dateStr];
-        if (!entry) return null;
-        const next = priceDays[entry.index + 1];
-        return {
-            earningsClose: entry.close,
-            nextDayClose: next ? next.close : null,
-            nextDayChangePercent: next ? +(((next.close - entry.close) / entry.close) * 100).toFixed(2) : null
-        };
-    }
-
-    // Build revenue lookup from Yahoo
-    const revenueByQuarter = {};
-    let yahooQuarterly = [];
-    if (yahooData.status === 'fulfilled') {
-        try {
-            const earningsModule = yahooData.value?.quoteSummary?.result?.[0]?.earnings;
-            if (earningsModule) {
-                yahooQuarterly = earningsModule.earningsChart?.quarterly || [];
-                (earningsModule.financialsChart?.quarterly || []).forEach(item => {
-                    const match = item.date?.match(/^(\d)Q(\d{4})$/);
-                    if (match) {
-                        const qNum = parseInt(match[1]); const year = parseInt(match[2]);
-                        const endMonth = qNum * 3;
-                        const endDate = new Date(Date.UTC(year, endMonth, 0));
-                        const periodKey = `${year}-${String(endMonth).padStart(2,'0')}-${String(endDate.getUTCDate()).padStart(2,'0')}`;
-                        revenueByQuarter[periodKey] = { revenue: item.revenue?.raw ?? null, revenueFmt: item.revenue?.fmt ?? null };
-                    }
-                });
+        // Try exact date, then ±1 trading day
+        for (let offset = 0; offset <= 2; offset++) {
+            const d   = new Date(dateStr + 'T00:00:00Z');
+            d.setUTCDate(d.getUTCDate() + offset);
+            const k   = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+            const entry = priceByDate[k];
+            if (entry) {
+                const next = priceDays[entry.index + 1];
+                return {
+                    earningsClose:       entry.close,
+                    nextDayClose:        next ? next.close : null,
+                    nextDayChangePercent: next ? +(((next.close - entry.close) / entry.close) * 100).toFixed(2) : null
+                };
             }
-        } catch(e) {}
+        }
+        return null;
     }
 
-    if (yahooQuarterly.length === 0) throw new Error('No earnings data available.');
+    // ── Process Finnhub historical EPS ──
+    const rawEps = epsData.status === 'fulfilled' && Array.isArray(epsData.value) ? epsData.value : [];
+    if (rawEps.length === 0) throw new Error('No earnings data available for this symbol.');
 
-    const quarters = yahooQuarterly.map(q => {
-        const periodDate = q.periodEndDate?.fmt || null;
-        const reportDate = q.reportedDate?.fmt || null;
-        const epsActual  = q.actual?.raw ?? null;
-        const epsEst     = q.estimate?.raw != null ? +(q.estimate.raw.toFixed(2)) : null;
-        let surpriseVal  = null;
-        if (epsActual != null && epsEst != null && epsEst !== 0) {
-            surpriseVal = +(((epsActual - epsEst) / Math.abs(epsEst)) * 100).toFixed(2);
-        }
+    const quarters = rawEps.map(e => {
+        const periodDate = e.period || null;        // "2025-12-31"
+        const epsActual  = e.actual  != null ? +e.actual.toFixed(2)  : null;
+        const epsEst     = e.estimate != null ? +e.estimate.toFixed(2) : null;
+
+        // Finnhub surprisePercent is already a %, e.g. 4.19 means +4.19%
+        const surpriseVal = e.surprisePercent != null ? +e.surprisePercent.toFixed(2) : null;
+
         let beatStatus = null;
         if (epsActual != null && epsEst != null) {
             beatStatus = epsActual > epsEst ? 'beat' : (epsActual < epsEst ? 'miss' : 'inline');
         }
-        const reaction = getPriceReaction(reportDate);
-        const revData   = periodDate ? (revenueByQuarter[periodDate] || null) : null;
-        return {
-            quarter: periodDate, reportDate, epsActual, epsEstimate: epsEst,
-            epsSuprise: surpriseVal, surprisePercent: surpriseVal, beat: beatStatus,
-            revenue: revData?.revenue ?? null, revenueFmt: revData?.revenueFmt ?? null,
-            priceClose: reaction?.earningsClose ?? null,
-            nextDayClose: reaction?.nextDayClose ?? null,
-            nextDayChangePercent: reaction?.nextDayChangePercent ?? null
-        };
-    }).sort((a, b) => (b.quarter || '').localeCompare(a.quarter || ''));
 
-    let nextDate = null; let nextEst = null; let nextRevEst = null;
+        // Format quarter label: e.g. "Q2 2026" from year/quarter fields
+        let quarterLabel = periodDate;
+        if (e.year && e.quarter) {
+            quarterLabel = `Q${e.quarter} ${e.year}`;
+        } else if (periodDate) {
+            // Derive from period date: YYYY-MM-DD → find which quarter
+            const m = parseInt(periodDate.split('-')[1]);
+            const y = periodDate.split('-')[0];
+            const qn = Math.ceil(m / 3);
+            quarterLabel = `Q${qn} ${y}`;
+        }
+
+        // Look up price reaction using the period end date
+        const reaction = getPriceReaction(periodDate);
+
+        return {
+            quarter:             quarterLabel,
+            periodDate,
+            reportDate:          periodDate,   // Finnhub period ≈ end of quarter (report date close)
+            epsActual,
+            epsEstimate:         epsEst,
+            epsSuprise:          surpriseVal,
+            surprisePercent:     surpriseVal,
+            beat:                beatStatus,
+            revenue:             null,          // Not available in Finnhub free tier
+            revenueFmt:          null,
+            priceClose:          reaction?.earningsClose        ?? null,
+            nextDayClose:        reaction?.nextDayClose         ?? null,
+            nextDayChangePercent:reaction?.nextDayChangePercent ?? null
+        };
+    }).sort((a, b) => (b.periodDate || '').localeCompare(a.periodDate || ''));
+
+    // ── Upcoming earnings from Finnhub calendar ──
+    let nextDate = null, nextEst = null, nextRevEst = null;
     if (calendarData.status === 'fulfilled' && Array.isArray(calendarData.value?.earningsCalendar)) {
         const upcoming = calendarData.value.earningsCalendar
-            .filter(c => c.date).sort((a, b) => new Date(a.date) - new Date(b.date));
+            .filter(c => c.date && c.date > fromS)
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
         if (upcoming.length > 0) {
             nextDate   = upcoming[0].date;
-            nextEst    = upcoming[0].epsEstimate != null ? +(upcoming[0].epsEstimate).toFixed(2) : null;
+            nextEst    = upcoming[0].epsEstimate != null ? +upcoming[0].epsEstimate.toFixed(2) : null;
             nextRevEst = upcoming[0].revenueEstimate ?? null;
         }
     }
 
     return { symbol, quarters, nextEarningsDate: nextDate, nextEarningsEstimate: nextEst, nextRevenueEstimate: nextRevEst };
 }
+
 
 // 9c. Render Economic Indicators Tab
 let currentIndicatorTier = 'Tier 1 (Primary)'; // Default tier state
