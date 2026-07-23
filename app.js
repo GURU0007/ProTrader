@@ -24,11 +24,13 @@ let currentChartType = 'line'; // 'line' or 'candle'
 let currentTableView = 'catalysts'; // 'catalysts' or 'compare'
 
 // Multi-proxy CORS strategy: try fastest proxy first, fall back on error
-// Proxies ordered by speed (fastest first)
+// Proxies ordered by speed/reliability (fastest first)
 const CORS_PROXIES = [
     (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+    (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
     (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
+
 
 // In-memory response cache (key: url, value: { data, expires })
 const _apiCache = new Map();
