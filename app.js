@@ -23,8 +23,12 @@ let currentInterval = '5m';   // '5m', '15m', '1h', '1d', '1wk', '1mo'
 let currentChartType = 'line'; // 'line' or 'candle'
 let currentTableView = 'catalysts'; // 'catalysts' or 'compare'
 
-// Handle file:// protocol loads by routing to local proxy
-const API_BASE = (window.location.protocol === 'file:' || !window.location.host.includes('8080')) ? 'http://localhost:8080' : '';
+// Handle file:// protocol loads by routing to local proxy. If hosted on GitHub Pages, fallback to a hosted backup instance.
+const API_BASE = (window.location.hostname === 'guru0007.github.io') 
+    ? 'https://protrader-proxy.onrender.com' 
+    : (window.location.protocol === 'file:' || !window.location.host.includes('8080')) 
+        ? 'http://localhost:8080' 
+        : '';
 
 // News Catalyst pools for Live AI Forecast HUD
 const POSITIVE_CATALYST_POOL = [
