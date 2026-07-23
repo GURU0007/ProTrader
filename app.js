@@ -133,6 +133,30 @@ async function corsGet(url, skipCache = false) {
     throw lastError || new Error('All CORS proxies failed');
 }
 
+// Direct fetch for APIs that natively support browser CORS (e.g. Finnhub)
+// Does NOT route through a proxy — avoids all proxy rate-limits and geo-blocks
+async function directGet(url) {
+    const cached = _apiCache.get(url);
+    if (cached && Date.now() < cached.expires) return cached.data;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+        const r = await fetch(url, {
+            signal: controller.signal,
+            headers: { 'Accept': 'application/json' }
+        });
+        clearTimeout(timeout);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        _apiCache.set(url, { data, expires: Date.now() + CACHE_TTL_MS });
+        return data;
+    } catch (err) {
+        clearTimeout(timeout);
+        throw err;
+    }
+}
+
 // News Catalyst pools for Live AI Forecast HUD
 const POSITIVE_CATALYST_POOL = [
     "Strong retail expenditure reports have fueled bullish sentiment across indices.",
@@ -1011,12 +1035,13 @@ async function fetchEarningsData(symbol) {
     const fromS  = now.toISOString().split('T')[0];
     const toS    = future.toISOString().split('T')[0];
 
-    // Fetch in parallel: historical EPS, price chart (for reaction), upcoming calendar
+    // Fetch in parallel: historical EPS (direct, no proxy), price chart (proxy), upcoming calendar (direct)
     const [epsData, chartData, calendarData] = await Promise.allSettled([
-        corsGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${FINNHUB_KEY}`, true),
+        directGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${FINNHUB_KEY}`),
         corsGet(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=3y&interval=1d`),
-        corsGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`, true)
+        directGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`)
     ]);
+
 
     // ── Build price-by-date lookup from Yahoo chart ──
     const priceDays   = [];
