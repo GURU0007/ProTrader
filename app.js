@@ -130,6 +130,24 @@ async function corsGet(url, skipCache = false) {
             // Try next proxy
         }
     }
+
+    // Direct fetch fallback if CORS proxies failed and URL allows direct access (e.g. query1.finance.yahoo.com)
+    if (url.includes('query1.finance.yahoo.com') || url.includes('query2.finance.yahoo.com')) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+            const r = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeout);
+            if (r.ok) {
+                const data = await r.json();
+                _apiCache.set(url, { data, expires: Date.now() + CACHE_TTL_MS });
+                return data;
+            }
+        } catch (e) {
+            // ignore direct fetch error, throw lastError
+        }
+    }
+
     throw lastError || new Error('All CORS proxies failed');
 }
 
@@ -1057,21 +1075,25 @@ async function fetchEarningsData(symbol) {
     const toS    = future.toISOString().split('T')[0];
 
     // Fetch in parallel: historical EPS (direct, no proxy), price chart (proxy), upcoming calendar (direct)
-    const [epsData, chartData, calendarData] = await Promise.allSettled([
-        directGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${FINNHUB_KEY}`),
+    let epsDataResult = null;
+    for (const key of FINNHUB_KEYS) {
+        try {
+            const data = await directGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${key}`);
+            if (Array.isArray(data) && data.length > 0) {
+                epsDataResult = data;
+                break;
+            }
+        } catch (e) {
+            // try next key
+        }
+    }
+
+    const [chartData, calendarData] = await Promise.allSettled([
         corsGet(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=3y&interval=1d`),
         directGet(`https://finnhub.io/api/v1/calendar/earnings?from=${fromS}&to=${toS}&symbol=${symbol}&token=${FINNHUB_KEY}`)
     ]);
 
-    // If primary key returned 429, retry once with secondary key
-    let rawEps = epsData.status === 'fulfilled' && Array.isArray(epsData.value) ? epsData.value : null;
-    if (!rawEps) {
-        const fallbackKey = FINNHUB_KEYS[(FINNHUB_KEYS.indexOf(FINNHUB_KEY) + 1) % FINNHUB_KEYS.length];
-        try {
-            const retry = await directGet(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}&limit=12&token=${fallbackKey}`);
-            if (Array.isArray(retry) && retry.length > 0) rawEps = retry;
-        } catch (e) { /* will throw below */ }
-    }
+    let rawEps = epsDataResult;
     if (!rawEps || rawEps.length === 0) throw new Error('Earnings data temporarily unavailable. Please try again in a moment.');
 
     // ── Build price-by-date lookup from Yahoo chart (date → {close, volume, index}) ──
