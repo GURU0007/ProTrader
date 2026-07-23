@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProTrader | Premium Real-Time Stock Analytics & Insights</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="styles.css?v=2">
+    <!-- TradingView Lightweight Charts CDN -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navbar -->
+        <header class="navbar">
+            <div class="nav-left">
+                <div class="logo">
+                    <div class="logo-icon"></div>
+                    <span class="logo-text">ProTrader</span>
+                    <span class="badge badge-primary">MVP</span>
+                </div>
+            </div>
+            
+            <div class="nav-center">
+                <div class="search-container">
+                    <div class="search-input-wrapper">
+                        <i data-lucide="search" class="search-icon"></i>
+                        <input type="text" id="stock-search" placeholder="Search by stock symbol or name (e.g. AAPL, MSFT)..." autocomplete="off">
+                        <button id="clear-search" class="clear-btn" style="display: none;">
+                            <i data-lucide="x"></i>
+                        </button>
+                    </div>
+                    <div id="search-results" class="search-dropdown" style="display: none;">
+                        <!-- Results populated dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-right">
+                <div class="market-status">
+                    <span class="status-dot pulsing"></span>
+                    <span class="status-text">Simulated Market Open</span>
+                </div>
+                <div class="current-time" id="live-time">10:51:14 AM</div>
+            </div>
+        </header>
+
+        <!-- Market Index Ticker -->
+        <section class="market-ticker">
+            <div class="ticker-card" id="index-sp500">
+                <div class="ticker-info">
+                    <span class="ticker-name">S&P 500</span>
+                    <span class="ticker-value">5,137.08</span>
+                </div>
+                <div class="ticker-trend trend-up">
+                    <i data-lucide="trending-up"></i>
+                    <span>+0.42%</span>
+                </div>
+            </div>
+            <div class="ticker-card" id="index-nasdaq">
+                <div class="ticker-info">
+                    <span class="ticker-name">NASDAQ</span>
+                    <span class="ticker-value">16,274.94</span>
+                </div>
+                <div class="ticker-trend trend-up">
+                    <i data-lucide="trending-up"></i>
+                    <span>+0.81%</span>
+                </div>
+            </div>
+            <div class="ticker-card" id="index-dow">
+                <div class="ticker-info">
+                    <span class="ticker-name">DOW JONES</span>
+                    <span class="ticker-value">39,087.38</span>
+                </div>
+                <div class="ticker-trend trend-down">
+                    <i data-lucide="trending-down"></i>
+                    <span>-0.12%</span>
+                </div>
+            </div>
+            <div class="ticker-card" id="index-russell">
+                <div class="ticker-info">
+                    <span class="ticker-name">RUSSELL 2000</span>
+                    <span class="ticker-value">2,055.48</span>
+                </div>
+                <div class="ticker-trend trend-up">
+                    <i data-lucide="trending-up"></i>
+                    <span>+0.25%</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Sidebar: Tracked Stocks -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <div class="title-group">
+                        <i data-lucide="layers" class="title-icon"></i>
+                        <h2>Watchlist</h2>
+                    </div>
+                    <span class="watchlist-count" id="watchlist-count">0</span>
+                </div>
+                
+                <div class="watchlist-container" id="watchlist-container">
+                    <!-- Dynamic Watchlist Items -->
+                    <div class="empty-watchlist" id="empty-watchlist-msg">
+                        <i data-lucide="trending-up" class="large-icon"></i>
+                        <p>Your watchlist is empty.</p>
+                        <span>Search and add stocks using the search bar above to begin tracking.</span>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Panel: Stock Details -->
+            <section class="detail-panel" id="detail-panel">
+                <!-- Empty State -->
+                <div class="empty-detail-state" id="empty-detail-state">
+                    <div class="illustration-container">
+                        <div class="chart-sparkline-art"></div>
+                        <i data-lucide="line-chart" class="hero-icon"></i>
+                    </div>
+                    <h2>No Stock Selected</h2>
+                    <p>Select a stock from your watchlist or search for a new company to view interactive price charts, daily metrics, and performance analysis reasons.</p>
+                    <div class="quick-suggest">
+                        <span class="suggest-label">Try adding popular stocks:</span>
+                        <div class="suggest-badges">
+                            <span class="suggest-badge" data-symbol="AAPL">AAPL</span>
+                            <span class="suggest-badge" data-symbol="MSFT">MSFT</span>
+                            <span class="suggest-badge" data-symbol="TSLA">TSLA</span>
+                            <span class="suggest-badge" data-symbol="NVDA">NVDA</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Active Stock Detail View (Hidden by default) -->
+                <div class="active-stock-view" id="active-stock-view" style="display: none;">
+                    <!-- Loading Overlay -->
+                    <div class="loading-overlay" id="loading-overlay">
+                        <div class="spinner"></div>
+                        <span class="loading-text">Fetching Live Market Data...</span>
+                    </div>
+                    <div class="stock-header-card">
+                        <div class="header-main-info">
+                            <div class="symbol-title-row">
+                                <h1 id="active-symbol">AAPL</h1>
+                                <span class="active-company-name" id="active-name">Apple Inc.</span>
+                            </div>
+                            <div class="header-price-row">
+                                <span class="active-price" id="active-price">$180.25</span>
+                                <span class="active-change-badge" id="active-change-badge">+1.45%</span>
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Tabs Navigation -->
+                    <div class="tab-navigation">
+                        <button class="tab-btn active" data-tab="chart-tab">
+                            <i data-lucide="area-chart"></i>
+                            <span>Interactive Chart</span>
+                        </button>
+                        <button class="tab-btn" data-tab="history-tab">
+                            <i data-lucide="history"></i>
+                            <span>View Price Change (Everyday Reasons)</span>
+                        </button>
+                        <button class="tab-btn" data-tab="earnings-tab">
+                            <i data-lucide="bar-chart-2"></i>
+                            <span>Quarterly Earnings</span>
+                        </button>
+                        <button class="tab-btn" data-tab="indicators-tab">
+                            <i data-lucide="globe"></i>
+                            <span>US Macro Indicators</span>
+                        </button>
+                    </div>
+
+                    <!-- Tabs Content -->
+                    <div class="tab-content-container">
+                        <!-- Chart Tab -->
+                        <div class="tab-panel active" id="chart-tab">
+                            <div class="chart-wrapper">
+                                <div class="chart-header">
+                                    <div class="chart-header-left">
+                                        <h3>Performance Chart</h3>
+                                        <!-- Chart Type Selectors (Line vs Candlestick) -->
+                                        <div class="chart-type-selector btn-group">
+                                            <button id="btn-chart-line" class="btn-chart-type active" title="Line View">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 3 9 4-2 4 6 7-10"/></svg>
+                                            </button>
+                                            <button id="btn-chart-candle" class="btn-chart-type" title="Candlestick View">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v20M6 5h4v14H6zM18 2v20M14 8h4v10h-4z"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="chart-controls">
+
+                                        <!-- History Range Selectors -->
+                                        <div class="btn-group">
+                                            <button class="btn-ctrl range-btn active" data-range="1d" data-interval="5m">1D</button>
+                                            <button class="btn-ctrl range-btn" data-range="3mo" data-interval="1d">3M</button>
+                                            <button class="btn-ctrl range-btn" data-range="ytd" data-interval="1d">YTD</button>
+                                            <button class="btn-ctrl range-btn" data-range="1y" data-interval="1d">1Y</button>
+                                            <button class="btn-ctrl range-btn" data-range="5y" data-interval="1wk">5Y</button>
+                                            <button class="btn-ctrl range-btn" data-range="max" data-interval="1mo">MAX</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="tv-chart" class="tv-chart-container"></div>
+                            </div>
+                            <!-- Market Index Quick Summary Grid -->
+                            <div class="metrics-grid" style="margin-top: 1rem;">
+                                <div class="metric-card">
+                                    <span class="metric-label">Open</span>
+                                    <span class="metric-value" id="stat-open">$178.50</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">Daily High</span>
+                                    <span class="metric-value text-up" id="stat-high">$181.10</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">Daily Low</span>
+                                    <span class="metric-value text-down" id="stat-low">$177.90</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">Volume</span>
+                                    <span class="metric-value" id="stat-volume">52.4M</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">Market Cap</span>
+                                    <span class="metric-value" id="stat-mktcap">$2.89T</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">P/E Ratio</span>
+                                    <span class="metric-value" id="stat-pe">28.4</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">52-Week High</span>
+                                    <span class="metric-value" id="stat-52w-high">$199.62</span>
+                                </div>
+                                <div class="metric-card">
+                                    <span class="metric-label">52-Week Low</span>
+                                    <span class="metric-value" id="stat-52w-low">$164.08</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- History / Everyday reasons Tab -->
+                        <div class="tab-panel" id="history-tab">
+                            <div class="history-table-wrapper">
+                                <div class="table-header-info">
+                                    <div class="table-header-flex">
+                                        <div>
+                                            <h3>Everyday Price Action & Drivers</h3>
+                                            <p>Detailed daily percentage adjustments and historical benchmarks for the selected equity.</p>
+                                        </div>
+                                        <!-- Table View Selector -->
+                                        <div class="table-view-selector btn-group">
+                                            <button id="btn-table-catalysts" class="btn-ctrl active">Catalysts View</button>
+                                            <button id="btn-table-compare" class="btn-ctrl">1Y Historical Comparison</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="table-scroll-container">
+                                    <table class="history-table">
+                                        <thead id="history-thead">
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Closing Price</th>
+                                                <th>Change (%)</th>
+                                                <th>Catalyst & Market Reason</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="history-rows">
+                                            <!-- Dynamically generated rows -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quarterly Earnings Tab -->
+                        <div class="tab-panel" id="earnings-tab">
+                            <div class="history-table-wrapper">
+                                <div class="table-header-info">
+                                    <div class="table-header-flex" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+                                        <div>
+                                            <h3>Quarterly Earnings Results</h3>
+                                            <p>EPS actual vs estimate, surprise %, beat/miss, report dates, and next-day price reaction.</p>
+                                        </div>
+                                    </div>
+                                    <!-- Next Earnings Prominent Banner -->
+                                    <div id="earnings-next-meta" style="display:none; margin-top:12px; background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.3); border-radius:12px; padding:14px 20px;">
+                                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                                            <i data-lucide="calendar-clock" style="width:15px;height:15px;color:var(--primary-color);"></i>
+                                            <span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary-color);">Next Earnings Report</span>
+                                        </div>
+                                        <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 16px;">
+                                            <span id="earnings-next-date" style="font-size:1.1rem;font-weight:800;color:#fff;font-family:var(--font-heading);">—</span>
+                                            <span id="earnings-next-countdown" style="font-size:0.78rem;color:var(--primary-color);font-weight:600;"></span>
+                                            <span id="earnings-next-estimate" style="font-size:0.85rem;font-weight:600;color:var(--text-muted);"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="earnings-loading" style="display:none; text-align:center; padding:2rem; color:var(--text-muted); font-size:0.9rem;">
+                                    <i data-lucide="loader" style="width:20px;height:20px;animation:spin 1s linear infinite;"></i>
+                                    &nbsp;Fetching earnings data...
+                                </div>
+                                <div class="table-scroll-container">
+                                    <table class="history-table" id="earnings-table" style="display:none;">
+                                        <thead>
+                                            <tr>
+                                                <th>Quarter End</th>
+                                                <th>Report Date</th>
+                                                <th>EPS Actual</th>
+                                                <th>EPS Estimate</th>
+                                                <th>Surprise %</th>
+                                                <th>Beat / Miss</th>
+                                                <th>Day-After %</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="earnings-rows">
+                                        </tbody>
+                                    </table>
+                                    <div id="earnings-empty" style="display:none; padding:2rem; text-align:center; color:var(--text-muted);">No earnings data available for this stock.</div>
+                                </div>
+                            </div>
+                        </div>
+
+
+                        <!-- Economic Indicators Tab -->
+                        <div class="tab-panel" id="indicators-tab">
+                            <div class="history-table-wrapper">
+                                <div class="table-header-info">
+                                    <div class="table-header-flex">
+                                        <div>
+                                            <h3>US Economic Indicators & Market Impact</h3>
+                                            <p>Overview of core Tier 1 (Primary) and Tier 2 (Secondary) macro events, triggers, and real-time algos reactions.</p>
+                                        </div>
+                                        <div class="table-view-selector btn-group">
+                                            <button id="btn-indicators-tier1" class="btn-ctrl active">Primary (Tier 1)</button>
+                                            <button id="btn-indicators-tier2" class="btn-ctrl">Secondary (Tier 2)</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="indicators-loading" style="display:none; text-align:center; padding:2rem; color:var(--text-muted); font-size:0.9rem;">
+                                    <i data-lucide="loader" style="width:20px;height:20px;animation:spin 1s linear infinite;"></i>
+                                    &nbsp;Fetching economic data...
+                                </div>
+                                <div id="indicators-list-container" class="indicators-list-container">
+                                    <!-- Dynamic cards populated here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+        
+        <!-- Toast Notification Area -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <!-- Market Closed / Weekend Fast-Forward Overlay -->
+    <div id="market-closed-overlay" class="market-closed-overlay" style="display: none;">
+        <div class="market-closed-card">
+            <div class="market-closed-icon">
+                <i data-lucide="coffee" style="width: 32px; height: 32px; color: var(--primary-color);"></i>
+            </div>
+            <h3 id="market-closed-title">Market Closed</h3>
+            <p id="market-closed-desc">The stock market is closed for the weekend. Resuming trading soon...</p>
+            <div class="countdown-bar-container">
+                <div id="countdown-bar" class="countdown-bar"></div>
+            </div>
+            <span id="countdown-text" class="countdown-text">Opening in 5 seconds...</span>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js?v=2"></script>
+</body>
+</html>
